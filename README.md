@@ -44,11 +44,15 @@ Run this from the project directory you want to protect:
 curl -sL https://raw.githubusercontent.com/easytocloud/claude-auto-mode-gate/main/install.sh | sh
 ```
 
-Pin it to a tag for a fixed version:
+Pin it to a tag for a fixed version (v1.0.0 predates the plugin layout, `main`
+is the current one):
 
 ```bash
 curl -sL https://raw.githubusercontent.com/easytocloud/claude-auto-mode-gate/v1.0.0/install.sh | sh
 ```
+
+A marketplace entry can pin a plugin to a branch, tag or commit with a `ref` or
+`sha` in its `source`; this one tracks the default branch.
 
 Then:
 
