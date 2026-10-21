@@ -28,20 +28,34 @@ get() {
 cwd=$(get cwd)
 [ -n "$cwd" ] && BASE="$cwd"
 
+# Where the classifier lives: the plugin that registered this hook, or the
+# project's own .claude/hooks when the gate was installed with install.sh.
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/hooks/auto_mode.py" ]; then
+    AUTO_MODE="${CLAUDE_PLUGIN_ROOT}/hooks/auto_mode.py"
+else
+    AUTO_MODE="${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/auto_mode.py"
+fi
+
 delegate() {
-    printf '%s' "$IN" | python3 -I "${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/auto_mode.py"
+    printf '%s' "$IN" | python3 -I "$AUTO_MODE"
     exit $?
 }
 
 tool=$(get tool_name)
 
-# Keep the audit trail complete: fastpath allows are recorded too.
-HOOKS_DIR="${CLAUDE_PROJECT_DIR:-.}/.claude/hooks"
-AUDIT="$HOOKS_DIR/audit.jsonl"
+# Keep the audit trail complete: fastpath allows are recorded too. A plugin's
+# data directory survives updates, the project hooks directory is where a
+# curl install keeps its log.
+if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then
+    AUDIT_DIR="$CLAUDE_PLUGIN_DATA"
+else
+    AUDIT_DIR="${CLAUDE_PROJECT_DIR:-.}/.claude/hooks"
+fi
+AUDIT="$AUDIT_DIR/audit.jsonl"
 sid=$(get session_id)
 
 log() {
-    [ -d "$HOOKS_DIR" ] || return 0
+    [ -d "$AUDIT_DIR" ] || mkdir -p "$AUDIT_DIR" 2>/dev/null || return 0
     printf '{"ts":%s,"session_id":"%s","tool":"%s","decision":"allow","rule":"fastpath","tier":"fastpath","path":"%s"}\n' \
         "$(date +%s)" "$sid" "$1" "$2" >> "$AUDIT"
 }

@@ -26,17 +26,39 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
 # ---------------------------------------------------------------- config ----
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_ROOT = os.environ.get("CLAUDE_PLUGIN_ROOT") or ""
+PLUGIN_DATA = os.environ.get("CLAUDE_PLUGIN_DATA") or ""
 PROJECT_DIR = (os.environ.get("CLAUDE_PROJECT_DIR")
                or os.path.dirname(os.path.dirname(HERE)))
-CONFIG_PATH = os.path.join(PROJECT_DIR, ".claude", "auto-mode.json")
-AUDIT_PATH = os.path.join(HERE, "audit.jsonl")
-CACHE_PATH = os.path.join(HERE, ".cache.json")
+
+
+def first_existing(paths):
+    for path in paths:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
+# A project's own .claude/auto-mode.json wins; the plugin ships a generic
+# default for projects that have none.
+CONFIG_PATH = first_existing([
+    os.path.join(PROJECT_DIR, ".claude", "auto-mode.json"),
+    os.path.join(PLUGIN_ROOT, "config", "auto-mode.json"),
+    os.path.join(os.path.dirname(HERE), "config", "auto-mode.json"),
+])
+
+# CLAUDE_PLUGIN_ROOT is a per-version cache, so the audit log and the decision
+# cache go to CLAUDE_PLUGIN_DATA, which survives updates.
+STATE_DIR = PLUGIN_DATA or HERE
+AUDIT_PATH = os.path.join(STATE_DIR, "audit.jsonl")
+CACHE_PATH = os.path.join(STATE_DIR, ".cache.json")
 CACHE_TTL = 300
 MODEL_TIMEOUT = 12
 
@@ -159,6 +181,7 @@ def emit(decision, reason):
 
 def log(record):
     try:
+        os.makedirs(STATE_DIR, exist_ok=True)
         with open(AUDIT_PATH, "a") as fh:
             fh.write(json.dumps(record) + "\n")
     except OSError:
@@ -167,6 +190,8 @@ def log(record):
 
 def load_config():
     cfg = {}
+    if not CONFIG_PATH:
+        return cfg
     try:
         with open(CONFIG_PATH) as fh:
             cfg = json.load(fh)
@@ -419,7 +444,46 @@ def transcript_context(data, max_messages=4, max_commands=6):
     return messages, commands
 
 
-def build_rules(cfg):
+MANIFESTS = ("package.json", "requirements.txt", "pyproject.toml", "Cargo.toml",
+             "go.mod", "Gemfile", "composer.json", "pom.xml")
+
+
+def detected_environment(cwd):
+    """Trust-boundary facts about the project, when the config states none.
+
+    A plugin install ships a generic config, so without this the classifier
+    would judge every command with no idea what surrounds it.
+    """
+    root = os.path.abspath(cwd or PROJECT_DIR)
+    facts = ["Project: %s at %s" % (os.path.basename(root), root)]
+
+    if os.path.isdir(os.path.join(root, ".git")):
+        remotes = set()
+        try:
+            out = subprocess.run(["git", "remote", "-v"], cwd=root,
+                                 capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 2:
+                    remotes.add(parts[1])
+        except Exception:
+            pass
+        if remotes:
+            facts.append("Source control remotes: " + ", ".join(sorted(remotes)))
+        else:
+            facts.append("Local git repository with no remote; nothing here "
+                         "reaches a remote host")
+    else:
+        facts.append("Not a git repository: there are no remote "
+                     "source-control destinations")
+
+    manifests = [f for f in MANIFESTS if os.path.exists(os.path.join(root, f))]
+    if manifests:
+        facts.append("Declared dependencies live in: " + ", ".join(manifests))
+    return facts
+
+
+def build_rules(cfg, cwd=""):
     rules = {}
     for key in ("hard_deny", "soft_deny", "allow", "environment"):
         entries = list(DEFAULT_RULES[key])
@@ -427,6 +491,8 @@ def build_rules(cfg):
         if extra:
             entries = extra + entries
         rules[key] = entries
+    if not cfg.get("environment"):
+        rules["environment"] = detected_environment(cwd)
     rules_file = os.environ.get("AUTO_MODE_RULES_FILE")
     if rules_file and os.path.exists(rules_file):
         try:
@@ -459,7 +525,7 @@ def classifier_endpoint(cfg):
 def classify(data, cfg, model):
     import urllib.request  # lazy: rule-tier decisions never touch the network
 
-    rules = build_rules(cfg)
+    rules = build_rules(cfg, data.get("cwd") or PROJECT_DIR)
     messages, _ = transcript_context(data)
     tool_input = json.dumps(data.get("tool_input") or {})
     if len(tool_input) > 3000:

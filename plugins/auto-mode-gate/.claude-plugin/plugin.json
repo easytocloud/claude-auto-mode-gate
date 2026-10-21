@@ -1,0 +1,13 @@
+{
+  "name": "auto-mode-gate",
+  "version": "1.0.0",
+  "description": "Decides every tool call before it runs, so --dangerously-skip-permissions keeps its guardrails. Rules first, the session's own model as the classifier for everything else.",
+  "author": {
+    "name": "Erik Meinders",
+    "url": "https://github.com/easytocloud"
+  },
+  "homepage": "https://github.com/easytocloud/claude-auto-mode-gate",
+  "repository": "https://github.com/easytocloud/claude-auto-mode-gate",
+  "license": "MIT",
+  "keywords": ["permissions", "safety", "hooks", "auto-mode"]
+}

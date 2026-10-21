@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Self-test for the gate. Runs offline: no network, no model.
 
-Covers the deterministic rule tiers, the verdict parser, and the shell
-fastpath. For the cases the fastpath cannot answer, the classifier is pointed
-at a closed local port so the outcome is the fail-closed "ask" rather than a
-real model call.
+Covers the deterministic rule tiers, the verdict parser, the settings merge,
+and the shell fastpath - in both install shapes, project files and plugin -
+including the command string from hooks/hooks.json. For the cases the fastpath
+cannot answer, the classifier is pointed at a closed local port so the outcome
+is the fail-closed "ask" rather than a real model call.
 
     python3 selftest.py
 """
@@ -17,8 +18,9 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOOK_DIR = os.path.join(HERE, "hooks")
-sys.path.insert(0, HERE)
+PLUGIN_DIR = os.path.join(HERE, "plugins", "auto-mode-gate")
+HOOK_DIR = os.path.join(PLUGIN_DIR, "hooks")
+sys.path.insert(0, PLUGIN_DIR)
 sys.path.insert(0, HOOK_DIR)
 
 import auto_mode  # noqa: E402
@@ -140,30 +142,44 @@ def run_settings():
     return failures
 
 
-def run_fastpath(scratch):
+def fastpath_cases(hook, env, mode):
     failures = 0
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=scratch,
-               ANTHROPIC_BASE_URL="http://127.0.0.1:1", ANTHROPIC_MODEL="")
     for payload, should_answer_here in FASTPATH_CASES:
-        payload = dict(payload, cwd=scratch, session_id="selftest")
+        payload = dict(payload, cwd=env["CLAUDE_PROJECT_DIR"], session_id="selftest")
         for pretty in (False, True):
             text = json.dumps(payload, indent=2 if pretty else None)
-            proc = subprocess.run(["sh", os.path.join(scratch, ".claude", "hooks",
-                                                      "fastpath.sh")],
-                                  input=text, capture_output=True, text=True,
-                                  env=env, cwd=scratch)
+            proc = subprocess.run(["sh", hook], input=text, capture_output=True,
+                                  text=True, env=env, cwd=env["CLAUDE_PROJECT_DIR"])
             answered = "fastpath" in proc.stdout
             failures += check(answered == should_answer_here,
-                              "fastpath %-12s %s" % (payload["tool_name"],
-                                                     "pretty" if pretty else "compact"),
+                              "fastpath %-12s %-7s %s"
+                              % (payload["tool_name"], mode,
+                                 "pretty" if pretty else "compact"),
                               "answered here" if answered else "delegated")
+    return failures
+
+
+def run_fastpath(scratch):
+    """The same cases through both install shapes: project files and plugin."""
+    failures = 0
+
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=scratch,
+               ANTHROPIC_BASE_URL="http://127.0.0.1:1", ANTHROPIC_MODEL="")
+    failures += fastpath_cases(os.path.join(scratch, ".claude", "hooks", "fastpath.sh"),
+                               env, "project")
+
+    data = os.path.join(scratch, "plugin-data")
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=scratch,
+               CLAUDE_PLUGIN_ROOT=PLUGIN_DIR, CLAUDE_PLUGIN_DATA=data,
+               ANTHROPIC_BASE_URL="http://127.0.0.1:1", ANTHROPIC_MODEL="")
+    failures += fastpath_cases(os.path.join(HOOK_DIR, "fastpath.sh"), env, "plugin")
+    failures += check(os.path.exists(os.path.join(data, "audit.jsonl")),
+                      "the plugin writes its audit log to CLAUDE_PLUGIN_DATA")
     return failures
 
 
 def run_end_to_end(scratch):
     """The whole hook, with the classifier unreachable: fail closed to 'ask'."""
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=scratch,
-               ANTHROPIC_BASE_URL="http://127.0.0.1:1", ANTHROPIC_MODEL="classifier-model")
     cases = [
         ({"tool_name": "Read", "tool_input": {"file_path": "README.md"}, "cwd": scratch},
          "allow"),
@@ -172,18 +188,68 @@ def run_end_to_end(scratch):
         ({"tool_name": "Bash", "tool_input": {"command": "git push origin main"},
           "cwd": scratch}, "ask"),
     ]
+    shapes = [
+        ("project", os.path.join(scratch, ".claude", "hooks", "auto_mode.py"), {}),
+        ("plugin", os.path.join(HOOK_DIR, "auto_mode.py"),
+         {"CLAUDE_PLUGIN_ROOT": PLUGIN_DIR,
+          "CLAUDE_PLUGIN_DATA": os.path.join(scratch, "plugin-data")}),
+    ]
     failures = 0
-    for payload, expected in cases:
-        proc = subprocess.run(["python3", "-I",
-                               os.path.join(scratch, ".claude", "hooks", "auto_mode.py")],
-                              input=json.dumps(payload), capture_output=True,
-                              text=True, env=env, cwd=scratch)
+    for mode, script, extra in shapes:
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=scratch,
+                   ANTHROPIC_BASE_URL="http://127.0.0.1:1",
+                   ANTHROPIC_MODEL="classifier-model", **extra)
+        for payload, expected in cases:
+            proc = subprocess.run(["python3", "-I", script],
+                                  input=json.dumps(payload), capture_output=True,
+                                  text=True, env=env, cwd=scratch)
+            try:
+                got = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"]
+            except (ValueError, KeyError):
+                got = None
+            failures += check(got == expected,
+                              "end-to-end %-7s %s" % (mode, payload["tool_name"]),
+                              "got %s, expected %s" % (got, expected))
+    return failures
+
+
+def run_environment(scratch):
+    """With an empty config (a plugin install), the rules still describe the project."""
+    rules = auto_mode.build_rules({}, scratch)
+    failures = check("Project:" in rules, "the classifier is told what the project is")
+    failures += check("Not a git repository" in rules,
+                      "the trust boundary mentions the absence of remotes")
+    return failures
+
+
+def run_hook_command(scratch):
+    """Run the exact command string from hooks/hooks.json, as a shell would."""
+    with open(os.path.join(HOOK_DIR, "hooks.json")) as fh:
+        hook = json.load(fh)["hooks"]["PreToolUse"][0]
+    failures = 0
+    failures += check(hook.get("matcher", "") == "", "the gate matches every tool")
+    handler = hook["hooks"][0]
+    failures += check(handler.get("onFailure") == "block",
+                      "a hook that crashes blocks the call")
+    command = handler["command"]
+
+    def run(plugin_root, payload):
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=scratch,
+                   CLAUDE_PLUGIN_ROOT=plugin_root,
+                   ANTHROPIC_BASE_URL="http://127.0.0.1:1", ANTHROPIC_MODEL="")
+        proc = subprocess.run(["sh", "-c", command], input=payload,
+                              capture_output=True, text=True, env=env, cwd=scratch)
         try:
-            got = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"]
+            return json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"]
         except (ValueError, KeyError):
-            got = None
-        failures += check(got == expected, "end-to-end %s" % payload["tool_name"],
-                         "got %s, expected %s" % (got, expected))
+            return None
+
+    payload = ('{"session_id":"t","tool_name":"Read",'
+               '"tool_input":{"file_path":"README.md"},"cwd":"%s"}' % scratch)
+    failures += check(run(PLUGIN_DIR, payload) == "allow",
+                      "hooks.json allows an in-project read")
+    failures += check(run("/nonexistent/plugin", payload) == "deny",
+                      "hooks.json fails closed when the plugin files are missing")
     return failures
 
 
@@ -204,7 +270,8 @@ def main():
     scratch = make_scratch()
     try:
         failures = (run_rules() + run_parser() + run_settings()
-                    + run_fastpath(scratch) + run_end_to_end(scratch))
+                    + run_fastpath(scratch) + run_end_to_end(scratch)
+                    + run_hook_command(scratch) + run_environment(scratch))
     finally:
         shutil.rmtree(scratch)
     print("\n%s" % ("all checks passed" if failures == 0

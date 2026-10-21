@@ -1,0 +1,17 @@
+{
+  "name": "easytocloud",
+  "description": "Claude Code plugins from easytocloud",
+  "owner": {
+    "name": "Erik Meinders",
+    "url": "https://github.com/easytocloud"
+  },
+  "plugins": [
+    {
+      "name": "auto-mode-gate",
+      "source": "./plugins/auto-mode-gate",
+      "description": "Re-installs permission checks in --dangerously-skip-permissions sessions, using the session's own model as the classifier.",
+      "category": "safety",
+      "tags": ["hooks", "permissions", "safety"]
+    }
+  ]
+}

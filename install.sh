@@ -1,7 +1,13 @@
 #!/bin/sh
-# claude-auto-mode-gate installer.
+# claude-auto-mode-gate installer - the copy of the gate that lives inside the
+# project, for people who do not want a plugin.
 #
 #   curl -sL https://raw.githubusercontent.com/easytocloud/claude-auto-mode-gate/main/install.sh | sh
+#
+# If Claude Code's plugin system is available, prefer it:
+#
+#   claude plugin marketplace add easytocloud/claude-auto-mode-gate
+#   claude plugin install auto-mode-gate@easytocloud
 #
 # Installs into the directory you run it from. Override with:
 #
@@ -44,9 +50,10 @@ fi
 echo "installing into $TARGET (ref $REF)"
 mkdir -p "$TARGET/.claude/hooks"
 
+SRC="plugins/auto-mode-gate"
 for f in hooks/auto_mode.py hooks/fastpath.sh gate_settings.py; do
-    if ! fetch "$f" > "$TARGET/.claude/hooks/$f"; then
-        echo "failed to download $f from $RAW/$f" >&2
+    if ! fetch "$SRC/$f" > "$TARGET/.claude/hooks/$f"; then
+        echo "failed to download $SRC/$f from $RAW/$SRC/$f" >&2
         exit 1
     fi
 done
@@ -55,8 +62,8 @@ chmod 0755 "$TARGET/.claude/hooks/fastpath.sh" "$TARGET/.claude/hooks/auto_mode.
 if [ -f "$TARGET/.claude/auto-mode.json" ] && [ "${GATE_FORCE:-0}" != "1" ]; then
     echo "keeping the existing .claude/auto-mode.json (set GATE_FORCE=1 to replace it)"
 else
-    if ! fetch config/auto-mode.json > "$TARGET/.claude/auto-mode.json"; then
-        echo "failed to download config/auto-mode.json" >&2
+    if ! fetch "$SRC/config/auto-mode.json" > "$TARGET/.claude/auto-mode.json"; then
+        echo "failed to download $SRC/config/auto-mode.json" >&2
         exit 1
     fi
 fi

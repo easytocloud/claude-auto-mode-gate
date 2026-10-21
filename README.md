@@ -10,35 +10,87 @@ Bedrock proxy) you get no gate at all in bypass mode. This hook is the
 drop-in replacement: it classifies every tool call with **the model the session
 is already running**.
 
+There are two ways to install it. Both register the same hook and behave the
+same way; the plugin is managed by Claude Code, the shell installer drops the
+files into the project.
+
+### 1. As a Claude Code plugin
+
+```bash
+claude plugin marketplace add easytocloud/claude-auto-mode-gate
+claude plugin install auto-mode-gate@easytocloud
+```
+
+In a session, the same thing in one line:
+
+```
+/plugin install auto-mode-gate --marketplace easytocloud/claude-auto-mode-gate
+```
+
+Add `--scope project` to write it to `.claude/settings.json` so everyone who
+works in the repository gets the gate (they still have to run the install
+themselves once - Claude Code does not fetch a plugin that is not on their
+machine). `--scope local` limits it to you in this repository.
+
+Update and remove it with `claude plugin update auto-mode-gate@easytocloud` and
+`claude plugin uninstall auto-mode-gate@easytocloud`. To try it without
+installing anything: `claude --plugin-dir ./plugins/auto-mode-gate`.
+
+### 2. With the shell installer
+
+Run this from the project directory you want to protect:
+
 ```bash
 curl -sL https://raw.githubusercontent.com/easytocloud/claude-auto-mode-gate/main/install.sh | sh
 ```
 
-Run it from the project directory you want to protect, then:
+Pin it to a tag for a fixed version:
+
+```bash
+curl -sL https://raw.githubusercontent.com/easytocloud/claude-auto-mode-gate/v1.0.0/install.sh | sh
+```
+
+Then:
 
 ```bash
 claude --dangerously-skip-permissions
 ```
 
-Pin the install to a tag if you want a fixed version:
+The installer writes the hook files into `.claude/hooks/` and registers the hook
+in `.claude/settings.local.json` (creating it if needed), without touching your
+existing hooks or permissions. Re-running it is safe; it updates the files and
+never duplicates the hook entry.
 
-```bash
-curl -sL https://raw.githubusercontent.com/easytocloud/claude-auto-mode-gate/v1.0.0/install.sh | sh
+## Repository layout
+
+```
+.claude-plugin/marketplace.json      the marketplace this repo is
+plugins/auto-mode-gate/
+  .claude-plugin/plugin.json         the plugin manifest
+  hooks/hooks.json                   the PreToolUse hook
+  hooks/fastpath.sh                  tier 0, the shell pre-filter
+  hooks/auto_mode.py                 the gate
+  config/auto-mode.json              the default config
+install.sh / uninstall.sh            the shell install path
+selftest.py                          offline tests, no network
 ```
 
 ## What gets installed
 
 | File | Role |
 |---|---|
-| `.claude/hooks/fastpath.sh` | Pre-filter: answers in-project file reads and edits in ~7 ms, no Python |
-| `.claude/hooks/auto_mode.py` | The gate: hard rules, safe rules, then the model |
+| `hooks/fastpath.sh` | Pre-filter: answers in-project file reads and edits in ~7 ms, no Python |
+| `hooks/auto_mode.py` | The gate: hard rules, safe rules, then the model |
 | `.claude/auto-mode.json` | Trust boundary and extra rules for this project |
-| `.claude/hooks/audit.jsonl` | Every decision, written at runtime |
-| `.claude/hooks/.cache.json` | Repeat-decision cache, 5-minute TTL |
+| `audit.jsonl` | Every decision, written at runtime |
+| `.cache.json` | Repeat-decision cache, 5-minute TTL |
 
-The installer registers the hook in `.claude/settings.local.json` (creating it
-if needed), without touching your existing hooks or permissions. Re-running it
-is safe; it updates the files and never duplicates the hook entry.
+With the plugin, the hook files live in Claude Code's plugin cache and the
+audit log and cache go to `~/.claude/plugins/data/auto-mode-gate-<marketplace>/`
+(`$CLAUDE_PLUGIN_DATA`), which survives updates. With the shell installer they
+stay in the project's `.claude/hooks/`. Either way, a project's own
+`.claude/auto-mode.json` is read first; the plugin's shipped default is used
+when the project has none.
 
 ## How a tool call is decided
 
@@ -119,18 +171,28 @@ AUTO_MODE_OFF=1 claude --dangerously-skip-permissions
 
 ```bash
 python3 selftest.py
+claude plugin validate ./plugins/auto-mode-gate
+claude plugin validate .
 ```
 
 Offline and deterministic: it exercises the hard rules, the safe rules, path
-containment, the verdict parser, and the shell fastpath, with the classifier
-pointed at a closed port so the ambiguous cases resolve to `ask`.
+containment, the verdict parser, and the shell fastpath - in both install
+shapes, project files and plugin - with the classifier pointed at a closed port
+so the ambiguous cases resolve to `ask`. It also runs the command string from
+`hooks/hooks.json` through a shell and checks that it allows an in-project read
+and denies when the plugin files are missing.
 
 ## Removing it
 
 ```bash
 sh uninstall.sh                      # from the project directory
 GATE_TARGET=/path/to/project sh uninstall.sh
+claude plugin uninstall auto-mode-gate@easytocloud     # if installed as a plugin
 ```
+
+`disableAllHooks: true` in settings switches off hooks declared in settings
+files; the docs do not say it covers plugin hooks, so for a plugin install use
+`claude plugin disable` instead.
 
 ## Known limits
 
