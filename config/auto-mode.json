@@ -1,0 +1,11 @@
+{
+  "comment": "Config for .claude/hooks/auto-mode-gate. Extra entries are prepended to the hook's built-in rules. install.sh fills in 'environment' and, if ANTHROPIC_BASE_URL is set, 'base_url'.",
+  "environment": [],
+  "allow": [],
+  "soft_deny": [],
+  "hard_deny": [],
+  "deny_commands": [],
+  "allow_tools": [],
+  "timeout_seconds": 8,
+  "disabled": false
+}

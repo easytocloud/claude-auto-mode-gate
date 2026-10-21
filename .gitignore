@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.claude/hooks/audit.jsonl
+.claude/hooks/.cache.json
+test-project/
